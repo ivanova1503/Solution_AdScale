@@ -1,0 +1,145 @@
+
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title AdScale - Target Architecture (TO-BE)
+
+LAYOUT_LEFT_RIGHT()
+LAYOUT_WITH_LEGEND()
+
+Person(userAdvertiser, "Рекламодатель", "Управление кампаниями и бюджетами")
+Person_Ext(endUser, "Пользователь", "Просмотр рекламы и клики")
+System_Ext(dspPartner, "DSP-партнёр", "Обмен bid-request и bid-response по OpenRTB")
+System_Ext(paymentGateway, "Платёжный шлюз", "Пополнение рекламных бюджетов")
+
+
+System_Boundary(apiGatewayBoundary, "API Gateway Layer") {
+    Container(apiGateway, "API Gateway", "Envoy", "Единая точка входа для внешних клиентов: аутентификация, rate limiting, проверка запросов, маршрутизация и таймауты")
+}
+
+System_Boundary(adServerBoundary, "AD Server") {
+    Container(adServer, "AD Server", "C++ / Go", "Приём запросов и подбор рекламных кандидатов")
+    ContainerDb(pgAdServer, "AD Server DB", "PostgreSQL", "Собственные данные AD Server")
+}
+
+System_Boundary(auctionBoundary, "Auction Engine") {
+    Container(auctionEngine, "Auction Engine", "C++", "Расчёт победителя аукциона и логика ставок")
+    ContainerDb(pgAuction, "Auction DB", "PostgreSQL", "Данные аукционов и ставок")
+}
+
+System_Boundary(deliveryBoundary, "Delivery Service") {
+    Container(deliveryService, "Delivery Service", "Node.js", "Формирование рекламной разметки и response")
+    ContainerDb(pgDelivery, "Delivery DB", "PostgreSQL", "Шаблоны и конфигурация доставки")
+}
+
+System_Boundary(dashboardBoundary, "Advertiser Dashboard") {
+    Container(adCabinet, "Advertiser Dashboard", "Node.js / JavaScript", "Управление кампаниями и отчётность")
+    ContainerDb(pgDashboard, "Dashboard DB", "PostgreSQL", "Данные личного кабинета")
+}
+
+System_Boundary(financialBoundary, "Financial Service") {
+    Container(financialService, "Financial Service", "Go", "Баланс, списания и выставление счетов")
+    ContainerDb(pgFinancial, "Financial DB", "PostgreSQL", "Финансовые транзакции и балансы")
+}
+
+System_Boundary(statsBoundary, "Statistics Service") {
+    Container(statsService, "Statistics Service", "Python", "Асинхронная обработка кликов и показов")
+    ContainerDb(pgStats, "Statistics DB", "PostgreSQL", "Операционные данные статистики")
+}
+
+System_Boundary(analyticsBoundary, "Analytics Service") {
+    Container(analyticsService, "Analytics Service", "Python", "Агрегация событий и аналитика")
+    ContainerDb(pgAnalytics, "Analytics DB", "PostgreSQL", "Аналитические данные и агрегаты")
+}
+
+System_Boundary(streamBoundary, "Event Streaming Platform") {
+    Container(eventBroker, "Event Broker", "Apache Kafka", "Буферизация и доставка событий")
+}
+
+System_Boundary(monitoringBoundary, "Observability") {
+    Container(monitoring, "Monitoring", "Metrics / Logs / Traces", "Контроль RPS, задержек, ошибок и доступности")
+}
+
+' External requests pass through API Gateway
+Rel(dspPartner, apiGateway, "Bid-request", "HTTPS / OpenRTB")
+Rel(apiGateway, adServer, "Маршрутизация запроса после проверок", "HTTP / gRPC")
+Rel(adServer, apiGateway, "Bid-response", "HTTP")
+Rel(apiGateway, dspPartner, "Bid-response", "HTTPS / OpenRTB")
+
+Rel(userAdvertiser, apiGateway, "Управление кампаниями", "HTTPS")
+Rel(apiGateway, adCabinet, "Маршрутизация запросов личного кабинета", "HTTPS / REST")
+
+Rel(paymentGateway, financialService, "Подтверждение платежа", "Webhook")
+Rel(endUser, deliveryService, "Получение рекламы", "HTTPS")
+
+' Critical synchronous bidding path
+Rel(adServer, auctionEngine, "Передача кандидатов", "Sync API")
+Rel(auctionEngine, deliveryService, "Результат аукциона", "Sync API")
+Rel(deliveryService, adServer, "Рекламный response", "Internal API")
+
+' Each service owns its database
+Rel(adServer, pgAdServer, "Собственные данные", "SQL")
+Rel(auctionEngine, pgAuction, "Чтение и запись ставок", "SQL")
+Rel(deliveryService, pgDelivery, "Чтение конфигурации", "SQL")
+Rel(adCabinet, pgDashboard, "CRUD собственных данных", "SQL")
+Rel(financialService, pgFinancial, "Транзакции и баланс", "SQL")
+Rel(statsService, pgStats, "Пакетная запись", "SQL")
+Rel(analyticsService, pgAnalytics, "Запись агрегатов и чтение", "SQL")
+
+' Service-to-service APIs
+Rel(adCabinet, financialService, "Финансовые операции", "API")
+Rel(adCabinet, analyticsService, "Запрос отчётов", "API")
+Rel(auctionEngine, financialService, "Проверка лимита", "API")
+
+' Event-driven processing
+Rel(adServer, eventBroker, "События запросов и показов", "Async")
+Rel(auctionEngine, eventBroker, "События аукционов", "Async")
+Rel(deliveryService, eventBroker, "События доставки и кликов", "Async")
+Rel(financialService, eventBroker, "Финансовые события", "Async")
+Rel(eventBroker, statsService, "Поток событий", "Consumer")
+Rel(eventBroker, analyticsService, "Поток событий", "Consumer")
+
+' Monitoring
+Rel(apiGateway, monitoring, "RPS, latency, rate-limit hits, ошибки", "Telemetry")
+Rel(adServer, monitoring, "Метрики и трассировка", "Telemetry")
+Rel(auctionEngine, monitoring, "Latency, RPS, ошибки", "Telemetry")
+Rel(eventBroker, monitoring, "Consumer lag", "Telemetry")
+Rel(financialService, monitoring, "Ошибки транзакций", "Telemetry")
+
+note right of apiGateway
+  Единая точка входа
+  Rate limiting
+  Аутентификация и авторизация
+  Проверка OpenRTB
+  Маршрутизация и таймауты
+  Корреляция запросов
+end note
+
+note right of auctionEngine
+  Критичный путь ставок
+  Минимум синхронных переходов
+  Оптимизация горячих данных
+  Целевой SLA: 80 мс
+end note
+
+note right of eventBroker
+  Асинхронная обработка
+  Буферизация событий
+  Повторные попытки и DLQ
+  Идемпотентные потребители
+end note
+
+note right of pgAuction
+  Database per Service
+  БД принадлежит Auction Engine.
+  Другие сервисы не обращаются
+  напрямую к её таблицам.
+end note
+
+note bottom of analyticsService
+  Аналитика работает со своим
+  хранилищем и не создаёт тяжёлую
+  нагрузку на БД ставок.
+end note
+
+@enduml

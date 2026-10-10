@@ -1,0 +1,67 @@
+
+@startuml
+title AdScale — DSP Bid Request: Sequence Diagram
+
+autonumber
+actor "DSP Partner" as DSP
+participant "API Gateway" as GW
+participant "Rate Limiter" as RL
+participant "Circuit Breaker" as CB
+participant "AD Server" as AD
+participant "Auction Engine" as AE
+participant "Bidding Service" as BS
+database "Campaign Cache" as Cache
+participant "Financial Service" as FS
+
+DSP -> GW: POST /openrtb2/auction\nOpenRTB BidRequest
+GW -> RL: Проверить лимит DSP
+
+alt Превышен лимит
+    RL --> GW: Limit exceeded
+    GW --> DSP: HTTP 429 Too Many Requests
+else Лимит не превышен
+    RL --> GW: Разрешить запрос
+    GW -> GW: Аутентификация и валидация
+    GW -> CB: Проверить состояние Circuit Breaker
+
+    alt Circuit Breaker OPEN
+        CB --> GW: Backend временно недоступен
+        GW --> DSP: Ошибка обработки / no-bid
+    else Circuit Breaker CLOSED или HALF-OPEN
+        CB -> AD: Передать BidRequest
+        AD -> AE: Запустить аукцион
+        AE -> BS: Рассчитать ставку
+
+        alt Bidding Service доступен
+            BS -> Cache: Получить конфигурацию кампаний
+            Cache --> BS: Кампании и ограничения
+            BS -> FS: Проверить доступный бюджет
+            alt Бюджет подтверждён
+                FS --> BS: Budget OK
+                BS --> AE: Bid
+            else Бюджет не подтверждён
+                FS --> BS: Ошибка / timeout
+                BS --> AE: No-bid
+            end
+        else Временная ошибка Bidding Service
+            AE -> BS: Ограниченный retry\nс экспоненциальной задержкой
+            alt Повтор успешен
+                BS --> AE: Результат ставки
+            else Повторы исчерпаны
+                AE -> Cache: Проверить допустимость fallback
+                alt Fallback безопасен и разрешён
+                    Cache --> AE: Проверенная резервная конфигурация
+                    AE --> AD: Резервный результат
+                else Fallback недопустим
+                    AE --> AD: No-bid
+                end
+            end
+        end
+
+        AD --> CB: Результат обработки
+        CB --> GW: BidResponse
+        GW --> DSP: HTTPS / OpenRTB BidResponse
+    end
+end
+
+@enduml

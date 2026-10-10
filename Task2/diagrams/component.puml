@@ -1,0 +1,92 @@
+
+@startuml
+title AdScale — Reliability Components
+
+left to right direction
+skinparam componentStyle rectangle
+
+actor "DSP Partner" as DSP
+
+package "API Gateway Layer" {
+    component "Kong API Gateway" as GW
+    component "Authentication\n& Request Validation" as AUTH
+    component "Rate Limiter" as RL
+    component "Upstream Timeout\n& Circuit Breaker" as CB
+    component "Metrics & Tracing" as METRICS
+}
+
+package "AdScale Core" {
+    component "AD Server" as AD
+    component "Auction Engine" as AE
+    component "Bidding Service" as BS
+    component "Financial Service" as FS
+    component "Campaign Management" as CM
+    database "Campaign Config Cache" as CACHE
+}
+
+package "Event Processing" {
+    queue "Apache Kafka" as KAFKA
+    component "Statistics Service" as STATS
+    component "Analytics Service" as ANALYTICS
+    queue "Dead Letter Queue" as DLQ
+}
+
+package "Observability" {
+    component "Monitoring & Alerting" as MON
+    component "Logs & Distributed Tracing" as TRACE
+}
+
+DSP --> GW : HTTPS / OpenRTB
+GW --> AUTH : Authenticate & validate
+AUTH --> RL : Valid request
+RL --> CB : Allowed request
+CB --> AD : Route to backend
+
+AD --> AE : Synchronous API
+AE --> BS : gRPC / bounded timeout
+BS --> CACHE : Read campaign config
+CM --> KAFKA : Publish config updates
+KAFKA --> BS : Update local cache
+
+BS --> FS : Budget validation
+FS --> KAFKA : Financial events
+
+AD --> KAFKA : Impression / request events
+AE --> KAFKA : Auction events
+KAFKA --> STATS : Consume events
+KAFKA --> ANALYTICS : Consume events
+STATS --> DLQ : Unprocessable events
+ANALYTICS --> DLQ : Unprocessable events
+
+GW --> METRICS : Latency, RPS, errors
+AD --> METRICS : Service metrics
+AE --> METRICS : Auction latency
+BS --> METRICS : Retry / fallback metrics
+FS --> METRICS : Transaction errors
+KAFKA --> METRICS : Consumer lag
+
+METRICS --> MON : Alerts and dashboards
+GW --> TRACE : Request trace
+AD --> TRACE : Trace propagation
+AE --> TRACE : Trace propagation
+BS --> TRACE : Trace propagation
+
+note bottom of CB
+  Circuit Breaker:
+  CLOSED / OPEN / HALF-OPEN
+  Retry только в пределах дедлайна
+end note
+
+note bottom of FS
+  Idempotency-Key
+  Уникальность операции
+  Транзакционная фиксация
+end note
+
+note bottom of CACHE
+  Версия конфигурации
+  TTL / максимальная устарелость
+  Fallback только по правилам
+end note
+
+@enduml
